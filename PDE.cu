@@ -125,7 +125,7 @@ __global__ void PDE_diff_k1 (float dt, float dx, float dsig, float pmin,
 	
 	__shared__ float input[NTPB];
 	__shared__ float output[NTPB];
-	input[threadIdx.x] = pt_GPU[0][blockDim.x][threadIdx.x];
+	input[threadIdx.x] = pt_GPU[0][blockIdx.x][threadIdx.x];
 	__syncthreads();
 
 	float sig = sigmin + blockIdx.x * dsig;
