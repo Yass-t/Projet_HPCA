@@ -125,14 +125,14 @@ __global__ void PDE_diff_k1 (float dt, float dx, float dsig, float pmin,
 	
 	__shared__ float input[NTPB];
 	__shared__ float output[NTPB];
-	input[threadIdx.x] = pt_GPU[0][blockDim.x][threadIdx.x];
+	input[threadIdx.x] = pt_GPU[0][blockIdx.x][threadIdx.x];
 	__syncthreads();
 
-	float sig = sigmin + blockIdx.x * dsig;
-	float mu = r - sqr(sig) / 2.f;
-    float p_u = (sqr(sig) * dt) / (2.f * sqr(dx)) + (mu * dt) / (2.f * dx);
-	float p_m = 1.f - sqr(sig) * dt / sqr(dx);
-	float p_d = (sqr(sig) * dt) / (2.f * sqr(dx)) - (mu * dt) / (2.f * dx);
+	const float sig = sigmin + blockIdx.x * dsig;
+	const float mu = r - sqr(sig) / 2.f;
+    const float p_u = (sqr(sig) * dt) / (2.f * sqr(dx)) + (mu * dt) / (2.f * dx);
+	const float p_m = 1.f - sqr(sig) * dt / sqr(dx);
+	const float p_d = (sqr(sig) * dt) / (2.f * sqr(dx)) - (mu * dt) / (2.f * dx);
 
 	if (threadIdx.x == NTPB - 1){
 		output[threadIdx.x] = pmax;
@@ -146,10 +146,73 @@ __global__ void PDE_diff_k1 (float dt, float dx, float dsig, float pmin,
 	pt_GPU[0][blockIdx.x][threadIdx.x] = output[threadIdx.x];
 
 
+}	
+
+/////////////////////////////////////////////////////////////////////////////
+// Q2 : Improved solution with fewer access to the global memory
+/////////////////////////////////////////////////////////////////////////////
+__global__ void PDE_diff_k2 (float dt, float dx, float dsig, float pmin, 
+							 float pmax, float sigmin, int timespan, MyTab *pt_GPU){
+	
+	extern __shared__ float input[];
+	extern __shared__ float output[];
+	
+	input[threadIdx.x] = pt_GPU[0][blockIdx.x][threadIdx.x];
+	__syncthreads();
+	
+	const float sig = sigmin + blockIdx.x * dsig;
+	const float mu = r - sqr(sig) / 2.f;
+	const float p_u = (sqr(sig) * dt) / (2.f * sqr(dx)) + (mu * dt) / (2.f * dx);
+	const float p_m = 1.f - sqr(sig) * dt / sqr(dx);
+	const float p_d = (sqr(sig) * dt) / (2.f * sqr(dx)) - (mu * dt) / (2.f * dx);
+
+	for (; timespan > 0; timespan--){
+		if (threadIdx.x == NTPB - 1){
+			output[threadIdx.x] = pmax;
+		}
+		else if (threadIdx.x == 0){
+			output[threadIdx.x] = pmin;
+		} else {
+			output[threadIdx.x] = p_u * input[threadIdx.x + 1] +  p_m * input[threadIdx.x] +   p_d * input[threadIdx.x - 1];
+		}
+
+		__syncthreads();
+		input[threadIdx.x] = output[threadIdx.x];
+		__syncthreads();
+	}
+
+	pt_GPU[0][blockIdx.x][threadIdx.x] = output[threadIdx.x];
 }
 
+/////////////////////////////////////////////////////////////////////////////
+// Q3 : Solution with implicit simulation
+/////////////////////////////////////////////////////////////////////////////
+/*
+__global__ void PDE_diff_k3(float dt, float dx, float dsig, float pmin,
+	float pmax, float sigmin, int timespan, MyTab* pt_GPU) {
+
+	__shared__ float a[NTPB];
+	__shared__ float d[NTPB];
+	__shared__ float c[NTPB];
+	__shared__ float u[NTPB];
+	__shared__ float y[NTPB];
+
+	u[threadIdx.x] = pt_GPU[0][blockIdx.x][threadIdx.x];
+	const float sig = sigmin + blockIdx.x * dsig;
+	const float mu = r - sqr(sig) / 2.f;
+	a[threadIdx.x] = - (sqr(sig) * dt) / (2.f * sqr(dx)) - (mu * dt) / (2.f * dx);
+	d[threadIdx.x] = 1.f + sqr(sig) * dt / sqr(dx);
+	c[threadIdx.x] = -(sqr(sig) * dt) / (2.f * sqr(dx)) + (mu * dt) / (2.f * dx);
+
+	__syncthreads();
+
+	PCR_d(a, d, c, y, sl, n);
 
 
+	pt_GPU[0][blockIdx.x][threadIdx.x] = y[threadIdx.x];
+}
+
+*/
 // Wrapper 
 void PDE_diff (float dt, float dx, float dsig, float pmin, float pmax, 
 			   float sigmin, int N, MyTab* CPUTab){
@@ -164,10 +227,15 @@ void PDE_diff (float dt, float dx, float dsig, float pmin, float pmax,
 	testCUDA(cudaMalloc(&GPUTab, sizeof(MyTab)));
 	
 	testCUDA(cudaMemcpy(GPUTab, CPUTab, sizeof(MyTab), cudaMemcpyHostToDevice));
+	
 	// Accessing 2*N times to the global memory
+	/*
 	for(int i=0; i<N; i++){
 	   PDE_diff_k1<<<NB,NTPB>>>(dt, dx, dsig, pmin, pmax, sigmin, GPUTab);
 	}
+	*/
+
+	PDE_diff_k2 <<<NB, NTPB, sizeof(float)*NTPB >>> (dt, dx, dsig, pmin, pmax, sigmin, N, GPUTab);
 
 	testCUDA(cudaMemcpy(CPUTab, GPUTab, sizeof(MyTab), cudaMemcpyDeviceToHost));
 
